@@ -29,22 +29,36 @@ ALLOWED_HOSTS = ["*"]
 
 
 # Application definition
+# django-tenants: shared apps live on the public schema; tenant apps are
+# replicated per tenant schema.
 
-INSTALLED_APPS = [
-    'django.contrib.admin',
-    'django.contrib.auth',
+SHARED_APPS = [
+    'django_tenants',  # mandatory
+    'tenants',  # where the tenant & domain models live
+    'django_bolt',
+    'debug_toolbar',
     'django.contrib.contenttypes',
+    'django.contrib.auth',
     'django.contrib.sessions',
     'django.contrib.messages',
+    'django.contrib.admin',
     'django.contrib.staticfiles',
-    'django_bolt',
+]
+
+TENANT_APPS = [
     'missions',
 ]
-if DEBUG:
-    INSTALLED_APPS.append('debug_toolbar')
+
+INSTALLED_APPS = list(SHARED_APPS) + [
+    app for app in TENANT_APPS if app not in SHARED_APPS
+]
+
+# Where the tenant and domain models live (app.Model)
+TENANT_MODEL = 'tenants.Client'
+TENANT_DOMAIN_MODEL = 'tenants.Domain'
 
 MIDDLEWARE = [
-    *(['debug_toolbar.middleware.DebugToolbarMiddleware'] if DEBUG else []),
+    'django_tenants.middleware.main.TenantMainMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -52,7 +66,12 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    *(['debug_toolbar.middleware.DebugToolbarMiddleware'] if DEBUG else []),
 ]
+
+DATABASE_ROUTERS = (
+    'django_tenants.routers.TenantSyncRouter',
+)
 
 ROOT_URLCONF = 'myproject.urls'
 
@@ -79,8 +98,12 @@ WSGI_APPLICATION = 'myproject.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'ENGINE': 'django_tenants.postgresql_backend',
+        'NAME': 'bolt_tenants',
+        'USER': 'bolt',
+        'PASSWORD': 'bolt',
+        'HOST': '127.0.0.1',
+        'PORT': '5433',
     }
 }
 

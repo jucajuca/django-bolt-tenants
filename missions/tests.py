@@ -1,15 +1,7 @@
 import pytest
-from django_bolt.testing import TestClient
-
-from missions.api import api
 
 
-@pytest.fixture
-def client():
-    with TestClient(api) as client:
-        yield client
-
-
+@pytest.mark.django_db
 def test_mission_control_status(client):
     response = client.get("/")
     assert response.status_code == 200
@@ -41,6 +33,7 @@ def test_create_mission_rejects_test_name(client):
     assert response.status_code == 422
 
 
+@pytest.mark.django_db
 def test_nonexistent_route_404(client):
     assert client.get("/nonexistent").status_code == 404
 
@@ -101,6 +94,7 @@ def test_add_astronaut_to_mission(client):
     assert len(list_response.json()["astronauts"]) == 1
 
 
+@pytest.mark.django_db
 def test_go_redirect(client):
     response = client.get("/go", follow_redirects=False)
     assert response.status_code == 307 or response.status_code == 302
@@ -132,3 +126,18 @@ def test_mission_detail_page(client):
 def test_mission_detail_page_not_found(client):
     response = client.get("/missions/999/detail")
     assert response.status_code == 404
+
+
+@pytest.mark.django_db
+def test_missions_are_isolated_per_tenant(client, beta_client):
+    """Missions created under the acme tenant must not be visible from beta."""
+    client.post("/missions", json={"name": "Acme Secret"})
+
+    acme_list = client.get("/missions")
+    assert acme_list.status_code == 200
+    assert any(m["name"] == "Acme Secret" for m in acme_list.json()["missions"])
+
+    beta_list = beta_client.get("/missions")
+    assert beta_list.status_code == 200
+    assert beta_list.json()["count"] == 0
+    assert all(m["name"] != "Acme Secret" for m in beta_list.json()["missions"])

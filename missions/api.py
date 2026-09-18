@@ -18,11 +18,12 @@ from django_bolt.shortcuts import render
 
 from missions.models import Astronaut, Mission
 
-DEBUG_TOOLBAR_MIDDLEWARE = (
-    ["debug_toolbar.middleware.DebugToolbarMiddleware"]
-    if "debug_toolbar" in settings.INSTALLED_APPS
-    else None
-)
+# django-tenants must resolve the tenant (and switch the DB schema) before any
+# other Django middleware runs, so it goes first in the chain.
+DJANGO_MIDDLEWARE = ["django_tenants.middleware.main.TenantMainMiddleware"]
+
+if "debug_toolbar" in settings.INSTALLED_APPS:
+    DJANGO_MIDDLEWARE.append("debug_toolbar.middleware.DebugToolbarMiddleware")
 
 api = BoltAPI(
     openapi_config=OpenAPIConfig(
@@ -30,7 +31,7 @@ api = BoltAPI(
         description="NASA-style mission control API",
         version="1.0.0",
     ),
-    django_middleware=DEBUG_TOOLBAR_MIDDLEWARE,
+    django_middleware=DJANGO_MIDDLEWARE,
 )
 
 if "debug_toolbar" in settings.INSTALLED_APPS:
