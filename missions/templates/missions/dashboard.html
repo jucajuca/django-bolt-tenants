@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Space Mission Dashboard</title>
+</head>
+<body>
+    <h1>Space Mission Dashboard</h1>
+    {% if missions %}
+        <ul>
+        {% for mission in missions %}
+            <li>
+                <strong>{{ mission.name }}</strong> -
+                <em>{{ mission.status }}</em>
+                {% if mission.description %}: {{ mission.description }}{% endif %}
+            </li>
+        {% endfor %}
+        </ul>
+    {% else %}
+        <p>No missions yet.</p>
+    {% endif %}
+</body>
+</html>

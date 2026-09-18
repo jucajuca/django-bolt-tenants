@@ -1,0 +1,303 @@
+from __future__ import annotations
+
+import asyncio
+import os
+from datetime import datetime
+from typing import Annotated, Literal
+
+from msgspec import Meta
+
+from django.conf import settings
+from django_bolt import BoltAPI, Request
+from django_bolt.exceptions import HTTPException, NotFound
+from django_bolt.openapi import OpenAPIConfig
+from django_bolt.param_functions import File, Form, Header, Query
+from django_bolt.responses import HTML, PlainText, Redirect
+from django_bolt.serializers import Serializer, field, field_validator
+from django_bolt.shortcuts import render
+
+from missions.models import Astronaut, Mission
+
+DEBUG_TOOLBAR_MIDDLEWARE = (
+    ["debug_toolbar.middleware.DebugToolbarMiddleware"]
+    if "debug_toolbar" in settings.INSTALLED_APPS
+    else None
+)
+
+api = BoltAPI(
+    openapi_config=OpenAPIConfig(
+        title="Space Mission Tracker",
+        description="NASA-style mission control API",
+        version="1.0.0",
+    ),
+    django_middleware=DEBUG_TOOLBAR_MIDDLEWARE,
+)
+
+if "debug_toolbar" in settings.INSTALLED_APPS:
+    api.mount_django("/__debug__", clear_root_path=True)
+
+
+class CreateMission(Serializer):
+    name: Annotated[str, Meta(min_length=1, max_length=100)]
+    description: Annotated[str, Meta(max_length=500)] = ""
+    launch_date: datetime | None = None
+
+    @field_validator("name")
+    def validate_name(cls, value):
+        if value.lower().startswith("test"):
+            raise ValueError("Mission name cannot start with 'test'")
+        return value
+
+
+class UpdateMission(Serializer):
+    name: Annotated[str, Meta(min_length=1, max_length=100)] | None = None
+    status: Literal["planned", "active", "completed", "aborted"] | None = None
+    description: Annotated[str, Meta(max_length=500)] | None = None
+
+
+class MissionResponse(Serializer):
+    id: int
+    name: str
+    status: str
+    launch_date: datetime | None = None
+    description: str = ""
+
+
+class MissionListResponse(Serializer):
+    missions: list[MissionResponse]
+    count: int
+
+
+class MissionCreatedResponse(Serializer):
+    id: int
+    name: str
+    status: str
+    message: str
+
+
+class MissionFilters(Serializer):
+    status: Literal["planned", "active", "completed", "aborted"] | None = None
+    limit: Annotated[int, Meta(ge=1, le=100)] = 10
+
+
+class CreateAstronaut(Serializer):
+    name: Annotated[str, Meta(min_length=1, max_length=100)]
+    role: Annotated[str, Meta(min_length=1, max_length=50)]
+
+    @field_validator("role")
+    def validate_role(cls, value):
+        valid_roles = [
+            "Commander",
+            "Pilot",
+            "Mission Specialist",
+            "Flight Engineer",
+            "Payload Specialist",
+        ]
+        if value not in valid_roles:
+            raise ValueError(f"Role must be one of: {', '.join(valid_roles)}")
+        return value
+
+
+class AstronautResponse(Serializer):
+    id: int
+    name: str
+    role: str
+    mission_id: int
+
+
+class AstronautCreatedResponse(Serializer):
+    id: int
+    name: str
+    role: str
+    mission: str = field(source="mission.name")
+
+
+class AstronautListResponse(Serializer):
+    mission: str
+    astronauts: list[AstronautResponse]
+
+
+@api.get("/", tags=["status"])
+async def mission_control_status():
+    return {"status": "operational", "message": "Mission Control Online"}
+
+
+@api.get("/missions", tags=["missions"])
+async def list_missions(filters: Annotated[MissionFilters, Query()]) -> MissionListResponse:
+    queryset = Mission.objects.all()
+    if filters.status:
+        queryset = queryset.filter(status=filters.status)
+
+    mission_tasks = [
+        MissionResponse.afrom_model(mission)
+        async for mission in queryset[: filters.limit]
+    ]
+    missions = list(await asyncio.gather(*mission_tasks))
+    return MissionListResponse(missions=missions, count=len(missions))
+
+
+@api.get("/missions/{mission_id}", tags=["missions"])
+async def get_mission(mission_id: int) -> MissionResponse:
+    try:
+        mission = await Mission.objects.aget(id=mission_id)
+        return await MissionResponse.afrom_model(mission)
+    except Mission.DoesNotExist as exc:
+        raise NotFound(detail=f"Mission {mission_id} not found") from exc
+
+
+@api.post("/missions", tags=["missions"])
+async def create_mission(mission: CreateMission) -> MissionCreatedResponse:
+    new_mission = await Mission.objects.acreate(
+        name=mission.name,
+        description=mission.description,
+        launch_date=mission.launch_date,
+        status="planned",
+    )
+    return MissionCreatedResponse(
+        id=new_mission.id,
+        name=new_mission.name,
+        status=new_mission.status,
+        message="Mission created successfully",
+    )
+
+
+@api.put("/missions/{mission_id}", tags=["missions"])
+async def update_mission(mission_id: int, data: UpdateMission) -> MissionResponse:
+    try:
+        mission = await Mission.objects.aget(id=mission_id)
+    except Mission.DoesNotExist as exc:
+        raise NotFound(detail=f"Mission {mission_id} not found") from exc
+
+    if data.name is not None:
+        mission.name = data.name
+    if data.status is not None:
+        mission.status = data.status
+    if data.description is not None:
+        mission.description = data.description
+
+    await mission.asave()
+    return await MissionResponse.afrom_model(mission)
+
+
+@api.delete("/missions/{mission_id}", status_code=204, tags=["missions"])
+async def delete_mission(mission_id: int):
+    try:
+        mission = await Mission.objects.aget(id=mission_id)
+    except Mission.DoesNotExist as exc:
+        raise NotFound(detail=f"Mission {mission_id} not found") from exc
+    await mission.adelete()
+
+
+@api.get("/missions/{mission_id}/classified", tags=["missions"])
+async def get_classified_info(
+    mission_id: int,
+    clearance: Annotated[str, Header(alias="X-Clearance-Level")],
+):
+    if clearance not in ["top-secret", "confidential"]:
+        raise HTTPException(status_code=403, detail="Insufficient clearance level")
+
+    try:
+        mission = await Mission.objects.aget(id=mission_id)
+    except Mission.DoesNotExist as exc:
+        raise NotFound(detail=f"Mission {mission_id} not found") from exc
+
+    return {
+        "mission": mission.name,
+        "classified_data": "Launch codes: APOLLO-7749-OMEGA",
+    }
+
+
+@api.get("/missions/{mission_id}/log", tags=["missions"])
+async def get_mission_log(mission_id: int):
+    try:
+        mission = await Mission.objects.aget(id=mission_id)
+    except Mission.DoesNotExist as exc:
+        raise NotFound(detail=f"Mission {mission_id} not found") from exc
+
+    log = f"=== MISSION LOG: {mission.name} ===\nStatus: {mission.status.upper()}"
+    return PlainText(log)
+
+
+@api.post("/missions/{mission_id}/patch", tags=["missions"])
+async def upload_mission_patch(
+    mission_id: int,
+    patch: Annotated[list[dict], File(alias="patch")],
+):
+    try:
+        mission = await Mission.objects.aget(id=mission_id)
+    except Mission.DoesNotExist as exc:
+        raise NotFound(detail=f"Mission {mission_id} not found") from exc
+
+    if not patch:
+        raise HTTPException(status_code=400, detail="No file uploaded")
+
+    file_info = patch[0]
+    filename = file_info.get("filename", "patch.png")
+    content = file_info.get("content", b"")
+
+    save_path = f"media/patches/{mission_id}_{filename}"
+    os.makedirs("media/patches", exist_ok=True)
+    with open(save_path, "wb") as f:
+        f.write(content)
+
+    mission.patch_image = save_path
+    await mission.asave()
+
+    return {"message": "Patch uploaded", "filename": filename}
+
+
+@api.post("/missions/{mission_id}/astronauts", tags=["astronauts"])
+async def add_astronaut(
+    mission_id: int,
+    data: Annotated[CreateAstronaut, Form()],
+) -> AstronautCreatedResponse:
+    try:
+        mission = await Mission.objects.aget(id=mission_id)
+    except Mission.DoesNotExist as exc:
+        raise NotFound(detail=f"Mission {mission_id} not found") from exc
+
+    astronaut = await Astronaut.objects.acreate(
+        name=data.name,
+        role=data.role,
+        mission=mission,
+    )
+    return await AstronautCreatedResponse.afrom_model(astronaut)
+
+
+@api.get("/missions/{mission_id}/astronauts", tags=["astronauts"])
+async def list_astronauts(mission_id: int) -> AstronautListResponse:
+    try:
+        mission = await Mission.objects.aget(id=mission_id)
+    except Mission.DoesNotExist as exc:
+        raise NotFound(detail=f"Mission {mission_id} not found") from exc
+
+    astronaut_tasks = [
+        AstronautResponse.afrom_model(astronaut)
+        async for astronaut in Astronaut.objects.filter(mission=mission)
+    ]
+    astronauts = list(await asyncio.gather(*astronaut_tasks))
+    return AstronautListResponse(mission=mission.name, astronauts=astronauts)
+
+
+@api.get("/status-page", tags=["status"])
+async def status_page():
+    return HTML("<h1>Mission Control: All Systems Operational</h1>")
+
+
+@api.get("/go", tags=["status"])
+async def go_to_dashboard():
+    return Redirect("/dashboard")
+
+
+@api.get("/dashboard", tags=["status"])
+async def mission_dashboard(request: Request):
+    missions = []
+    async for mission in Mission.objects.all()[:20]:
+        missions.append(
+            {
+                "name": mission.name,
+                "status": mission.status,
+                "description": mission.description,
+            }
+        )
+    return render(request, "missions/dashboard.html", {"missions": missions})
