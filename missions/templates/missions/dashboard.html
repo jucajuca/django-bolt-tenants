@@ -9,7 +9,7 @@
         <ul>
         {% for mission in missions %}
             <li>
-                <strong>{{ mission.name }}</strong> -
+                <a href="/missions/{{ mission.id }}/detail"><strong>{{ mission.name }}</strong></a> -
                 <em>{{ mission.status }}</em>
                 {% if mission.description %}: {{ mission.description }}{% endif %}
             </li>

@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ mission.name }} - Space Mission Tracker</title>
+</head>
+<body>
+    <p><a href="/dashboard">&larr; Back to dashboard</a></p>
+    <h1>Mission: {{ mission.name }}</h1>
+
+    <dl>
+        <dt>Status</dt>
+        <dd>{{ mission.status }}</dd>
+
+        {% if mission.launch_date %}
+        <dt>Launch date</dt>
+        <dd>{{ mission.launch_date }}</dd>
+        {% endif %}
+
+        {% if mission.description %}
+        <dt>Description</dt>
+        <dd>{{ mission.description }}</dd>
+        {% endif %}
+
+        {% if mission.patch_image %}
+        <dt>Patch</dt>
+        <dd><img src="/{{ mission.patch_image }}" alt="{{ mission.name }} patch"></dd>
+        {% endif %}
+    </dl>
+
+    <h2>Astronauts</h2>
+    {% if astronauts %}
+        <ul>
+        {% for astronaut in astronauts %}
+            <li>{{ astronaut.name }} - <em>{{ astronaut.role }}</em></li>
+        {% endfor %}
+        </ul>
+    {% else %}
+        <p>No astronauts assigned yet.</p>
+    {% endif %}
+</body>
+</html>

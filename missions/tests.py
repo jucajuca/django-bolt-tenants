@@ -114,3 +114,21 @@ def test_dashboard_page(client):
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "Discovery" in response.text
+
+
+@pytest.mark.django_db
+def test_mission_detail_page(client):
+    create_response = client.post("/missions", json={"name": "Endeavour"})
+    mission_id = create_response.json()["id"]
+
+    response = client.get(f"/missions/{mission_id}/detail")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "Endeavour" in response.text
+    assert "No astronauts assigned yet." in response.text
+
+
+@pytest.mark.django_db
+def test_mission_detail_page_not_found(client):
+    response = client.get("/missions/999/detail")
+    assert response.status_code == 404

@@ -30,6 +30,12 @@ python manage.py migrate
 python manage.py runbolt --dev
 ```
 
+To run on a different port, e.g. `9080`:
+
+```bash
+python manage.py runbolt --dev --port 9080
+```
+
 Then open:
 
 - API root: <http://127.0.0.1:8000/>

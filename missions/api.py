@@ -295,9 +295,35 @@ async def mission_dashboard(request: Request):
     async for mission in Mission.objects.all()[:20]:
         missions.append(
             {
+                "id": mission.id,
                 "name": mission.name,
                 "status": mission.status,
                 "description": mission.description,
             }
         )
     return render(request, "missions/dashboard.html", {"missions": missions})
+
+
+@api.get("/missions/{mission_id}/detail", tags=["status"])
+async def mission_detail(request: Request, mission_id: int):
+    try:
+        mission = await Mission.objects.aget(id=mission_id)
+    except Mission.DoesNotExist as exc:
+        raise NotFound(detail=f"Mission {mission_id} not found") from exc
+
+    astronauts = []
+    async for astronaut in Astronaut.objects.filter(mission=mission):
+        astronauts.append({"name": astronaut.name, "role": astronaut.role})
+
+    context = {
+        "mission": {
+            "id": mission.id,
+            "name": mission.name,
+            "status": mission.status,
+            "launch_date": mission.launch_date,
+            "description": mission.description,
+            "patch_image": mission.patch_image,
+        },
+        "astronauts": astronauts,
+    }
+    return render(request, "missions/detail.html", context)
