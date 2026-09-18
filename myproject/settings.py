@@ -144,6 +144,11 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
+# Probe D: per-tenant media storage root. django-tenants would normally provide
+# TENANT_MEDIA_ROOT for tenant-aware storage; here we scope patch uploads under
+# this directory keyed by tenant schema.
+TENANT_MEDIA_ROOT = BASE_DIR / 'media' / 'tenant_patches'
+
 INTERNAL_IPS = ["127.0.0.1"]
 
 

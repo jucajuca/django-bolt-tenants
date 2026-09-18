@@ -7,7 +7,9 @@ from typing import Annotated, Literal
 
 from msgspec import Meta
 
+from asgiref.sync import sync_to_async
 from django.conf import settings
+from django.db import connection
 from django_bolt import BoltAPI, Request
 from django_bolt.exceptions import HTTPException, NotFound
 from django_bolt.openapi import OpenAPIConfig
@@ -19,7 +21,11 @@ from django_bolt.shortcuts import render
 from missions.models import Astronaut, Mission
 
 # django-tenants must resolve the tenant (and switch the DB schema) before any
-# other Django middleware runs, so it goes first in the chain.
+# other Django middleware runs, so it goes first in the chain. Probe B explored
+# replacing TenantMainMiddleware with an async __call__-only middleware; that
+# attempt FAILED (see missions/async_tenant_middleware.py and its test), so the
+# standard sync TenantMainMiddleware (via DjangoMiddlewareStack) remains the
+# baseline.
 DJANGO_MIDDLEWARE = ["django_tenants.middleware.main.TenantMainMiddleware"]
 
 if "debug_toolbar" in settings.INSTALLED_APPS:
@@ -121,6 +127,28 @@ class AstronautListResponse(Serializer):
 @api.get("/", tags=["status"])
 async def mission_control_status():
     return {"status": "operational", "message": "Mission Control Online"}
+
+
+@api.get("/schema-debug", tags=["probe"])
+async def schema_debug():
+    """Probe A: report which DB schema this request actually resolves to.
+
+    Exposes both django-tenants' in-memory ``connection.schema_name`` and the
+    database's real ``current_schema()`` so we can confirm the async ORM and
+    raw queries run against the tenant the Host header selected.
+    """
+
+    @sync_to_async
+    def _current_schema() -> str:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT current_schema()")
+            return cursor.fetchone()[0]
+
+    real_schema = await _current_schema()
+    return {
+        "tenant_schema_name": getattr(connection, "schema_name", None),
+        "current_schema": real_schema,
+    }
 
 
 @api.get("/missions", tags=["missions"])
@@ -236,15 +264,27 @@ async def upload_mission_patch(
     filename = file_info.get("filename", "patch.png")
     content = file_info.get("content", b"")
 
-    save_path = f"media/patches/{mission_id}_{filename}"
-    os.makedirs("media/patches", exist_ok=True)
+    # Probe D: tenant-isolate uploaded patches. Scope the storage directory by
+    # the tenant schema resolved by TenantMainMiddleware so acme and beta
+    # uploads never collide, and each tenant only ever sees its own files.
+    tenant_schema = getattr(connection, "schema_name", "public")
+    media_root = getattr(settings, "TENANT_MEDIA_ROOT", "media/tenant_patches")
+    tenant_dir = os.path.join(media_root, tenant_schema, "patches")
+    os.makedirs(tenant_dir, exist_ok=True)
+
+    save_path = os.path.join(tenant_dir, f"{mission_id}_{filename}")
     with open(save_path, "wb") as f:
         f.write(content)
 
     mission.patch_image = save_path
     await mission.asave()
 
-    return {"message": "Patch uploaded", "filename": filename}
+    return {
+        "message": "Patch uploaded",
+        "filename": filename,
+        "tenant_schema": tenant_schema,
+        "path": save_path,
+    }
 
 
 @api.post("/missions/{mission_id}/astronauts", tags=["astronauts"])
