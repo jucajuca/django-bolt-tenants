@@ -21,11 +21,12 @@ from django_bolt.shortcuts import render
 from missions.models import Astronaut, Mission, Spaceship
 
 # django-tenants must resolve the tenant (and switch the DB schema) before any
-# other Django middleware runs, so it goes first in the chain. Probe B explored
-# replacing TenantMainMiddleware with an async __call__-only middleware; that
-# attempt FAILED (see missions/async_tenant_middleware.py and its test), so the
-# standard sync TenantMainMiddleware (via DjangoMiddlewareStack) remains the
-# baseline.
+# other Django middleware runs, so it goes first in the chain. (An earlier probe
+# tried replacing TenantMainMiddleware with an async __call__-only middleware;
+# it was falsified — a per-request middleware cannot scope the thread-local
+# connections used by the threads that run the queries. The real fix was the
+# contextvar-backed tenant state in the django-tenants fork, requirements.txt.)
+# The standard sync TenantMainMiddleware (via DjangoMiddlewareStack) remains.
 DJANGO_MIDDLEWARE = ["django_tenants.middleware.main.TenantMainMiddleware"]
 
 if "debug_toolbar" in settings.INSTALLED_APPS:
