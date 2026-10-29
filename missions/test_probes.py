@@ -19,7 +19,7 @@ from django_bolt.testing import AsyncTestClient
 
 from missions.api import api
 
-from conftest import TENANTS
+from conftest import TENANTS, ensure_tenants
 
 
 # --------------------------------------------------------------------------- #
@@ -49,6 +49,9 @@ def test_probe_a_async_path_schema_attribute(tenants_created):
     attribute previously stuck at 'public' because tenant state was thread-local
     and could not reach the thread running the async query).
     """
+    # Earlier transaction=True tests flush tenant rows on teardown; restore them.
+    ensure_tenants()
+
     async def _run():
         async with AsyncTestClient(
             api, base_url=f"http://{TENANTS['acme']}"
@@ -62,11 +65,11 @@ def test_probe_a_async_path_schema_attribute(tenants_created):
 
 
 @pytest.mark.django_db
-def test_probe_a_async_orm_writes_into_tenant_schema(client, beta_client):
+def test_probe_a_async_orm_writes_into_tenant_schema(client, beta_client, spaceship_id, beta_spaceship_id):
     """Creates done through async ORM (apost/acreate) must land in the tenant's
     own schema and be invisible from the sibling tenant."""
-    client.post("/missions", json={"name": "Async Acme Mission"})
-    beta_client.post("/missions", json={"name": "Async Beta Mission"})
+    client.post("/missions", json={"name": "Async Acme Mission", "spaceship": spaceship_id})
+    beta_client.post("/missions", json={"name": "Async Beta Mission", "spaceship": beta_spaceship_id})
 
     acme_list = client.get("/missions")
     acme_names = {m["name"] for m in acme_list.json()["missions"]}
@@ -102,25 +105,38 @@ def test_probe_b_concurrent_cross_tenant_isolation(tenants_created, django_db_bl
 
     ``tenants_created`` is session-scoped, but transaction=True tests flush all
     tables on teardown, so by the time this test runs the tenant rows may be
-    gone. We re-seed them here (committed via django_db_blocker) to be safe.
+    gone. We re-seed them here (idempotent, committed since transaction=True)
+    to be safe.
     """
-    from tenants.models import Client, Domain
-    with django_db_blocker.unblock():
-        connection.set_schema_to_public()
-        for schema_name, domain in TENANTS.items():
-            if not Client.objects.filter(schema_name=schema_name).exists():
-                tenant = Client(schema_name=schema_name, name=schema_name.title())
-                tenant.save()
-                Domain.objects.create(domain=domain, tenant=tenant, is_primary=True)
-        connection.set_schema_to_public()
+    ensure_tenants()
 
     async def _run():
         async with AsyncTestClient(
             api, base_url=f"http://{TENANTS['acme']}"
         ) as acme, AsyncTestClient(api, base_url=f"http://{TENANTS['beta']}") as beta:
-            # Seed a mission into each schema (committed via the API).
-            assert (await acme.post("/missions", json={"name": "ACME-SECRET"})).status_code == 200
-            assert (await beta.post("/missions", json={"name": "BETA-SECRET"})).status_code == 200
+            # Seed a spaceship + mission into each schema (committed via the API).
+            acme_ship = (
+                await acme.post(
+                    "/spaceships",
+                    json={"name": "Acme Async Ship", "call_sign": "ACME-ASYNC"},
+                )
+            ).json()["id"]
+            beta_ship = (
+                await beta.post(
+                    "/spaceships",
+                    json={"name": "Beta Async Ship", "call_sign": "BETA-ASYNC"},
+                )
+            ).json()["id"]
+            assert (
+                await acme.post(
+                    "/missions", json={"name": "ACME-SECRET", "spaceship": acme_ship}
+                )
+            ).status_code == 200
+            assert (
+                await beta.post(
+                    "/missions", json={"name": "BETA-SECRET", "spaceship": beta_ship}
+                )
+            ).status_code == 200
 
             async def acme_probe(n: int):
                 r = await acme.get("/schema-debug")
@@ -146,11 +162,15 @@ def test_probe_b_concurrent_cross_tenant_isolation(tenants_created, django_db_bl
 
 
 @pytest.mark.django_db
-def test_probe_d_patches_are_isolated_per_tenant(client, beta_client):
+def test_probe_d_patches_are_isolated_per_tenant(client, beta_client, spaceship_id, beta_spaceship_id):
     """Patch uploads must be stored under per-tenant directories and each
     tenant must only ever see its own files."""
-    acme_id = client.post("/missions", json={"name": "Acme Patch"}).json()["id"]
-    beta_id = beta_client.post("/missions", json={"name": "Beta Patch"}).json()["id"]
+    acme_id = client.post(
+        "/missions", json={"name": "Acme Patch", "spaceship": spaceship_id}
+    ).json()["id"]
+    beta_id = beta_client.post(
+        "/missions", json={"name": "Beta Patch", "spaceship": beta_spaceship_id}
+    ).json()["id"]
 
     acme_up = client.post(
         f"/missions/{acme_id}/patch",

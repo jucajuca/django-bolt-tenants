@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from tenants.models import Client, Domain
+from tenants.models import Domain, Organization
 
 
 class DomainInline(admin.TabularInline):
@@ -8,8 +8,8 @@ class DomainInline(admin.TabularInline):
     extra = 0
 
 
-@admin.register(Client)
-class ClientAdmin(admin.ModelAdmin):
+@admin.register(Organization)
+class OrganizationAdmin(admin.ModelAdmin):
     list_display = ("schema_name", "name", "created_on")
     search_fields = ("schema_name", "name")
     inlines = [DomainInline]

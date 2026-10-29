@@ -18,7 +18,7 @@ from django_bolt.responses import HTML, PlainText, Redirect
 from django_bolt.serializers import Serializer, field, field_validator
 from django_bolt.shortcuts import render
 
-from missions.models import Astronaut, Mission
+from missions.models import Astronaut, Mission, Spaceship
 
 # django-tenants must resolve the tenant (and switch the DB schema) before any
 # other Django middleware runs, so it goes first in the chain. Probe B explored
@@ -44,8 +44,20 @@ if "debug_toolbar" in settings.INSTALLED_APPS:
     api.mount_django("/__debug__", clear_root_path=True)
 
 
+class CreateSpaceship(Serializer):
+    name: Annotated[str, Meta(min_length=1, max_length=100)]
+    call_sign: Annotated[str, Meta(min_length=1, max_length=20)]
+
+
+class SpaceshipResponse(Serializer):
+    id: int
+    name: str
+    call_sign: str
+
+
 class CreateMission(Serializer):
     name: Annotated[str, Meta(min_length=1, max_length=100)]
+    spaceship: int
     description: Annotated[str, Meta(max_length=500)] = ""
     launch_date: datetime | None = None
 
@@ -59,6 +71,7 @@ class CreateMission(Serializer):
 class UpdateMission(Serializer):
     name: Annotated[str, Meta(min_length=1, max_length=100)] | None = None
     status: Literal["planned", "active", "completed", "aborted"] | None = None
+    spaceship: int | None = None
     description: Annotated[str, Meta(max_length=500)] | None = None
 
 
@@ -68,6 +81,8 @@ class MissionResponse(Serializer):
     status: str
     launch_date: datetime | None = None
     description: str = ""
+    spaceship_id: int
+    spaceship_name: str = field(source="spaceship.name")
 
 
 class MissionListResponse(Serializer):
@@ -129,6 +144,33 @@ async def mission_control_status():
     return {"status": "operational", "message": "Mission Control Online"}
 
 
+@api.get("/spaceships", tags=["spaceships"])
+async def list_spaceships() -> list[SpaceshipResponse]:
+    return [await SpaceshipResponse.afrom_model(ship) async for ship in Spaceship.objects.all()]
+
+
+@api.post("/spaceships", tags=["spaceships"])
+async def create_spaceship(data: CreateSpaceship) -> SpaceshipResponse:
+    try:
+        ship = await Spaceship.objects.acreate(
+            name=data.name, call_sign=data.call_sign
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Could not create spaceship: {exc}"
+        ) from exc
+    return await SpaceshipResponse.afrom_model(ship)
+
+
+@api.get("/spaceships/{spaceship_id}", tags=["spaceships"])
+async def get_spaceship(spaceship_id: int) -> SpaceshipResponse:
+    try:
+        ship = await Spaceship.objects.aget(id=spaceship_id)
+    except Spaceship.DoesNotExist as exc:
+        raise NotFound(detail=f"Spaceship {spaceship_id} not found") from exc
+    return await SpaceshipResponse.afrom_model(ship)
+
+
 @api.get("/schema-debug", tags=["probe"])
 async def schema_debug():
     """Probe A: report which DB schema this request actually resolves to.
@@ -153,7 +195,7 @@ async def schema_debug():
 
 @api.get("/missions", tags=["missions"])
 async def list_missions(filters: Annotated[MissionFilters, Query()]) -> MissionListResponse:
-    queryset = Mission.objects.all()
+    queryset = Mission.objects.select_related("spaceship")
     if filters.status:
         queryset = queryset.filter(status=filters.status)
 
@@ -168,7 +210,7 @@ async def list_missions(filters: Annotated[MissionFilters, Query()]) -> MissionL
 @api.get("/missions/{mission_id}", tags=["missions"])
 async def get_mission(mission_id: int) -> MissionResponse:
     try:
-        mission = await Mission.objects.aget(id=mission_id)
+        mission = await Mission.objects.select_related("spaceship").aget(id=mission_id)
         return await MissionResponse.afrom_model(mission)
     except Mission.DoesNotExist as exc:
         raise NotFound(detail=f"Mission {mission_id} not found") from exc
@@ -176,11 +218,17 @@ async def get_mission(mission_id: int) -> MissionResponse:
 
 @api.post("/missions", tags=["missions"])
 async def create_mission(mission: CreateMission) -> MissionCreatedResponse:
+    try:
+        ship = await Spaceship.objects.aget(id=mission.spaceship)
+    except Spaceship.DoesNotExist as exc:
+        raise NotFound(detail=f"Spaceship {mission.spaceship} not found") from exc
+
     new_mission = await Mission.objects.acreate(
         name=mission.name,
         description=mission.description,
         launch_date=mission.launch_date,
         status="planned",
+        spaceship=ship,
     )
     return MissionCreatedResponse(
         id=new_mission.id,
@@ -203,6 +251,18 @@ async def update_mission(mission_id: int, data: UpdateMission) -> MissionRespons
         mission.status = data.status
     if data.description is not None:
         mission.description = data.description
+    if data.spaceship is not None and data.spaceship != mission.spaceship_id:
+        # Reassignable until launch (mirrors Mission.clean(), which the API
+        # path bypasses).
+        if mission.status != "planned":
+            raise HTTPException(
+                status_code=400, detail="Cannot reassign a spaceship after launch"
+            )
+        try:
+            ship = await Spaceship.objects.aget(id=data.spaceship)
+        except Spaceship.DoesNotExist as exc:
+            raise NotFound(detail=f"Spaceship {data.spaceship} not found") from exc
+        mission.spaceship = ship
 
     await mission.asave()
     return await MissionResponse.afrom_model(mission)

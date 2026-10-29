@@ -41,6 +41,7 @@ SHARED_APPS = [
     'django.contrib.auth',
     'django.contrib.sessions',
     'django.contrib.messages',
+    'django.contrib.sites',  # Site mirror of the primary Domain (public schema)
     'django.contrib.admin',
     'django.contrib.staticfiles',
 ]
@@ -54,7 +55,7 @@ INSTALLED_APPS = list(SHARED_APPS) + [
 ]
 
 # Where the tenant and domain models live (app.Model)
-TENANT_MODEL = 'tenants.Client'
+TENANT_MODEL = 'tenants.Organization'
 TENANT_DOMAIN_MODEL = 'tenants.Domain'
 
 MIDDLEWARE = [
@@ -148,6 +149,14 @@ STATIC_URL = 'static/'
 # TENANT_MEDIA_ROOT for tenant-aware storage; here we scope patch uploads under
 # this directory keyed by tenant schema.
 TENANT_MEDIA_ROOT = BASE_DIR / 'media' / 'tenant_patches'
+
+# Main domain of the deployment. The public tenant serves this domain; every
+# other Organization gets a <tenant>.MAIN_DOMAIN subdomain. Site rows mirror
+# the primary Domain 1:1 with Site.pk == Organization.id (see tenants/signals.py).
+MAIN_DOMAIN = 'myapp.com'
+
+# No static SITE_ID: Site rows are resolved deterministically per tenant via
+# Site.objects.get(pk=tenant.pk), so a per-request lookup is always correct.
 
 INTERNAL_IPS = ["127.0.0.1"]
 
